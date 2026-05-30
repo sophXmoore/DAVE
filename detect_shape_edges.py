@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 
 # Try 0 first. If it doesn't open the right camera, try 1 or 2.
-CAMERA_INDEX = 0
+CAMERA_INDEX = 1
 
 # Solid shapes must be at least this big (filters noise / tiny specks).
 MIN_AREA = 1500
@@ -275,9 +275,10 @@ def run_on_image(path):
 
 def run_on_camera():
     # CAP_DSHOW (DirectShow) opens far faster than the MSMF default on Windows.
-    cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
+    #cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
+    cap = cv2.VideoCapture(CAMERA_INDEX)
     if not cap.isOpened():
-        raise RuntimeError(
+        raise RuntimeError (
             "Could not open webcam. Try changing CAMERA_INDEX to 1 or 2."
         )
 
