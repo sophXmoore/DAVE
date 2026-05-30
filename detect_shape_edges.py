@@ -5,8 +5,18 @@ import numpy as np
 # Try 0 first. If it doesn't open the right camera, try 1 or 2.
 CAMERA_INDEX = 0
 
-# Ignore contours smaller than this many pixels (filters noise / tiny specks).
+# Solid shapes must be at least this big (filters noise / tiny specks).
 MIN_AREA = 1500
+
+# Drawn lines are thin, so they have small area -- allow much smaller blobs
+# through when we're looking for marker strokes.
+MIN_LINE_AREA = 350
+
+# A contour is treated as a drawn line (not a filled shape) when its estimated
+# stroke thickness is below this many pixels. thickness ~= 2 * area / perimeter:
+# for a long thin stroke this works out to roughly the marker's width, while a
+# filled shape comes out much larger (~half its diameter).
+LINE_MAX_THICKNESS = 14
 
 # HSV color ranges. Hue in OpenCV is 0-179.
 # Red wraps around 0/180, so it needs two ranges.
@@ -36,10 +46,19 @@ def mask_for_color(hsv, ranges):
     for lo, hi in ranges:
         m = cv2.inRange(hsv, lo, hi)
         mask = m if mask is None else cv2.bitwise_or(mask, m)
-    kernel = np.ones((5, 5), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    # Gentle open (3x3) so thin marker strokes survive; close (5x5) to bridge
+    # small gaps in a stroke that camera noise / glare would otherwise break up.
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
     return mask
+
+
+def stroke_thickness(area, perimeter):
+    # Approximate stroke width. For a long thin stroke (area ~= length*width,
+    # perimeter ~= 2*length) this reduces to roughly the width itself.
+    if perimeter == 0:
+        return 0.0
+    return 2.0 * area / perimeter
 
 
 def classify_polygon(approx):
@@ -72,24 +91,43 @@ def detect_shapes(frame):
 
         for c in contours:
             area = cv2.contourArea(c)
-            if area < MIN_AREA:
+            if area < MIN_LINE_AREA:
                 continue
 
-            epsilon = 0.03 * cv2.arcLength(c, True)
-            approx = cv2.approxPolyDP(c, epsilon, True)
-
-            cv2.drawContours(output, [approx], -1, draw_bgr, 3)
+            perimeter = cv2.arcLength(c, True)
+            thickness = stroke_thickness(area, perimeter)
 
             M = cv2.moments(c)
             if M["m00"] != 0:
                 cx = int(M["m10"] / M["m00"])
                 cy = int(M["m01"] / M["m00"])
-                label = f"{color_name} {classify_polygon(approx)}"
-                cv2.circle(output, (cx, cy), 5, draw_bgr, -1)
+            else:
+                cx, cy = c[0][0]
+
+            if thickness < LINE_MAX_THICKNESS:
+                # Thin -> treat as a hand-drawn marker line/stroke. Trace the
+                # stroke itself rather than approximating it to a polygon.
+                cv2.drawContours(output, [c], -1, draw_bgr, 2)
                 cv2.putText(
-                    output, label, (cx - 50, cy - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, draw_bgr, 2
+                    output, f"{color_name} line", (cx - 40, cy - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, draw_bgr, 2
                 )
+                continue
+
+            # Fat -> filled shape. Apply the usual size floor and classify it.
+            if area < MIN_AREA:
+                continue
+
+            epsilon = 0.03 * perimeter
+            approx = cv2.approxPolyDP(c, epsilon, True)
+
+            cv2.drawContours(output, [approx], -1, draw_bgr, 3)
+            label = f"{color_name} {classify_polygon(approx)}"
+            cv2.circle(output, (cx, cy), 5, draw_bgr, -1)
+            cv2.putText(
+                output, label, (cx - 50, cy - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, draw_bgr, 2
+            )
 
     return output, combined_mask
 
