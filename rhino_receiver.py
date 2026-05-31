@@ -1,9 +1,9 @@
 """
-DAVE — Rhino TCP Receiver
+DAVE — Rhino TCP Receiver (Timer-based)
 Run this inside Rhino via Tools > PythonScript > Run (or the Script Editor).
 
-It listens for JSON from tcp_sender.py and redraws polylines in Rhino
-every second. Press Escape in Rhino to stop.
+Uses a WinForms Timer instead of a blocking loop, so Rhino's main thread
+(and Grasshopper) can continue running freely between ticks.
 
 Expected message format (newline-delimited JSON):
 {
@@ -14,33 +14,32 @@ Expected message format (newline-delimited JSON):
 }
 """
 
-import rhinoscriptsyntax as rs
 import Rhino
 import scriptcontext as sc
 import socket
 import threading
 import json
-import time
-import System.Drawing
 import System
+import System.Drawing
+import System.Windows.Forms as WinForms
 
 # --- Config ---
-HOST = "127.0.0.1"
-PORT = 9877
-UPDATE_INTERVAL = 1.0  # seconds
+HOST            = "127.0.0.1"
+PORT            = 9877
+UPDATE_INTERVAL = 1000  # milliseconds (WinForms Timer uses ms, not seconds)
 
 # --- Shared state ---
 _latest_shapes = []
-_lock = threading.Lock()
-_running = True
-
-# Maps shape id -> list of Rhino object GUIDs so we can delete & redraw.
-_registry = {}
-
-# Maps shape id -> last drawn centroid, used to skip unchanged shapes.
-_centroids = {}
+_lock          = threading.Lock()
+_running       = True
+_registry      = {}   # shape id -> list of Rhino GUIDs
+_centroids     = {}   # shape id -> last drawn centroid
 MOVE_TOLERANCE = 5.0  # units — skip redraw if centroid moves less than this
 
+
+# ---------------------------------------------------------------------------
+# Centroid helpers
+# ---------------------------------------------------------------------------
 
 def _centroid(pts_2d):
     n = len(pts_2d)
@@ -60,7 +59,7 @@ def _has_moved(sid, pts_2d):
 
 
 # ---------------------------------------------------------------------------
-# Listener thread
+# Listener thread — runs on a background thread, never touches Rhino objects
 # ---------------------------------------------------------------------------
 
 def listener_loop():
@@ -74,7 +73,7 @@ def listener_loop():
     print("[receiver] Listening on {}:{}".format(HOST, PORT))
 
     conn = None
-    buf = ""
+    buf  = ""
 
     while _running:
         if conn is None:
@@ -116,15 +115,28 @@ def listener_loop():
             conn = None
 
     srv.close()
-    print("[receiver] Stopped.")
+    print("[receiver] Listener stopped.")
 
 
 # ---------------------------------------------------------------------------
-# Geometry helpers
+# Geometry helpers — only called from the timer tick (main thread)
 # ---------------------------------------------------------------------------
 
 def _rgb_to_color(rgb):
     return System.Drawing.Color.FromArgb(int(rgb[0]), int(rgb[1]), int(rgb[2]))
+
+
+VIS_LAYER = "DAVE_INPUT_VIS"
+
+
+def _ensure_vis_layer():
+    idx = sc.doc.Layers.FindByFullPath(VIS_LAYER, True)
+    if idx < 0:
+        layer = Rhino.DocObjects.Layer()
+        layer.Name  = VIS_LAYER
+        layer.Color = System.Drawing.Color.FromArgb(180, 180, 255)
+        idx = sc.doc.Layers.Add(layer)
+    return idx
 
 
 def _delete_ids(guids):
@@ -135,8 +147,18 @@ def _delete_ids(guids):
             pass
 
 
+def _make_attr(color, name, layer_index):
+    attr = Rhino.DocObjects.ObjectAttributes()
+    attr.ObjectColor  = color
+    attr.ColorSource  = Rhino.DocObjects.ObjectColorSource.ColorFromObject
+    attr.Name         = name
+    attr.LayerIndex   = layer_index
+    return attr
+
+
 def redraw(shapes):
     incoming_ids = {s["id"] for s in shapes}
+    vis_layer    = _ensure_vis_layer()
 
     # Remove shapes that have disappeared.
     for sid in list(_registry.keys()):
@@ -150,73 +172,95 @@ def redraw(shapes):
         color      = _rgb_to_color(shape.get("color", [200, 200, 200]))
         shape_type = shape.get("shape", "unknown")
 
-        # Skip redraw if the shape hasn't moved beyond tolerance.
         if not _has_moved(sid, pts_2d):
             continue
 
-        # Build 3D points on the XY plane (z = 0).
-        pts3d = [Rhino.Geometry.Point3d(p[0], p[1], 0) for p in pts_2d]
-
-        # Close filled shapes; leave lines open.
+        pts3d   = [Rhino.Geometry.Point3d(p[0], p[1], 0) for p in pts_2d]
         is_line = (shape_type == "line")
+
         if not is_line and len(pts3d) > 2 and pts3d[0].DistanceTo(pts3d[-1]) > 1e-6:
             pts3d.append(pts3d[0])
 
-        # Delete previous version of this shape.
         if sid in _registry:
             _delete_ids(_registry[sid])
 
-        # Add new polyline curve.
+        guids = []
+        name  = "dave_{}".format(sid)
+
         pl    = Rhino.Geometry.Polyline(pts3d)
         curve = pl.ToNurbsCurve()
         guid  = sc.doc.Objects.AddCurve(curve)
+        if guid != System.Guid.Empty:
+            obj = sc.doc.Objects.Find(guid)
+            if obj:
+                attr = obj.Attributes.Duplicate()
+                attr.ObjectColor = color
+                attr.ColorSource = Rhino.DocObjects.ObjectColorSource.ColorFromObject
+                attr.Name        = name
+                sc.doc.Objects.ModifyAttributes(obj, attr, True)
+            guids.append(guid)
 
-        if guid == System.Guid.Empty:
-            _registry[sid] = []
-            continue
+        if not is_line and len(pts3d) >= 4:
+            try:
+                breps = Rhino.Geometry.Brep.CreatePlanarBreps(curve, sc.doc.ModelAbsoluteTolerance)
+                if breps:
+                    srf_color = System.Drawing.Color.FromArgb(
+                        80, int(color.R), int(color.G), int(color.B)
+                    )
+                    for brep in breps:
+                        srf_guid = sc.doc.Objects.AddBrep(
+                            brep, _make_attr(srf_color, name + "_srf", vis_layer)
+                        )
+                        if srf_guid != System.Guid.Empty:
+                            guids.append(srf_guid)
+            except Exception as e:
+                print("[receiver] Surface error for {}: {}".format(sid, e))
 
-        # Apply per-object color and name.
-        obj  = sc.doc.Objects.Find(guid)
-        if obj:
-            attr = obj.Attributes.Duplicate()
-            attr.ObjectColor  = color
-            attr.ColorSource  = Rhino.DocObjects.ObjectColorSource.ColorFromObject
-            attr.Name         = "dave_{}".format(sid)
-            sc.doc.Objects.ModifyAttributes(obj, attr, True)
-
-        _registry[sid] = [guid]
+        _registry[sid] = guids
 
     sc.doc.Views.Redraw()
 
 
 # ---------------------------------------------------------------------------
-# Main update loop (runs on Rhino's main thread)
+# Timer tick — fires on the main thread, so Rhino geometry calls are safe.
+# Replaces the old blocking while-loop entirely.
 # ---------------------------------------------------------------------------
 
-def run():
+def _on_tick(sender, event_args):
+    with _lock:
+        shapes = list(_latest_shapes)
+
+    if shapes:
+        try:
+            redraw(shapes)
+        except Exception as e:
+            print("[receiver] Redraw error: {}".format(e))
+
+
+# ---------------------------------------------------------------------------
+# Public stop helper — run stop_receiver.py or call this from Script Editor
+# ---------------------------------------------------------------------------
+
+def stop_receiver():
     global _running
-
-    t = threading.Thread(target=listener_loop, daemon=True)
-    t.start()
-
-    print("[receiver] Running. Press Escape to stop.")
-
-    while True:
-        if sc.escape_test(False):
-            print("[receiver] Escape pressed — shutting down.")
-            _running = False
-            break
-
-        with _lock:
-            shapes = list(_latest_shapes)
-
-        if shapes:
-            try:
-                redraw(shapes)
-            except Exception as e:
-                print("[receiver] Redraw error: {}".format(e))
-
-        time.sleep(UPDATE_INTERVAL)
+    _running = False
+    _timer.Stop()
+    _timer.Dispose()
+    print("[receiver] Timer stopped. Listener thread will exit shortly.")
 
 
-run()
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+# Start the background listener thread.
+_listener_thread = threading.Thread(target=listener_loop, daemon=True)
+_listener_thread.start()
+
+# Create and start the WinForms timer (fires on main thread — GH-safe).
+_timer          = WinForms.Timer()
+_timer.Interval = UPDATE_INTERVAL
+_timer.Tick    += _on_tick
+_timer.Start()
+
+print("[receiver] Running (timer-based, interval={}ms).".format(UPDATE_INTERVAL))
