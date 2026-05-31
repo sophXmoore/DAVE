@@ -2,7 +2,7 @@
 
 > A live, physical-to-digital design tool that bridges 3D printed massing models with AI-driven parametric generation in Rhino/Grasshopper.
 
-![DAVE demo](./assets/demo.png)
+![DAVE demo](./demo.png)
 
 Built at AECTech.
 
