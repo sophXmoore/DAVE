@@ -31,7 +31,7 @@ COLOR_RANGES = {
         (np.array([95,  120,  50]), np.array([130, 255, 255])),
     ],
     "black": [
-        (np.array([0,     0,   0]), np.array([179,  90,  70])),
+        (np.array([0,     0,   0]), np.array([179,  150, 150])),
     ],
 }
 
@@ -224,6 +224,7 @@ def detect_shapes(frame):
                 detections.append({
                     "id": next_id,
                     "color": color_name,
+                    "shape": "line",
                     "points": coords,
                 })
                 next_id += 1
@@ -272,53 +273,3 @@ def run_on_image(path):
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
-
-def run_on_camera():
-    # CAP_DSHOW (DirectShow) opens far faster than the MSMF default on Windows.
-    #cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
-    cap = cv2.VideoCapture(CAMERA_INDEX)
-    if not cap.isOpened():
-        raise RuntimeError (
-            "Could not open webcam. Try changing CAMERA_INDEX to 1 or 2."
-        )
-
-    last_print = time.time()
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        frame = cv2.resize(frame, (960, 540))
-        output, mask, detections = detect_shapes(frame)
-
-        cv2.imshow("Webcam", frame)
-        cv2.imshow("Color Mask", mask)
-        cv2.imshow("Detected Shapes", output)
-
-        # Print the current detections JSON every 5 seconds.
-        now = time.time()
-        if now - last_print >= 5.0:
-            print(json.dumps(detections, indent=2), flush=True)
-            last_print = now
-
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord("q"):
-            break
-        if key == ord("s"):
-            # Snapshot the current frame's detections to JSON.
-            save_detections(detections, "detections.json")
-
-    cap.release()
-    cv2.destroyAllWindows()
-
-
-if __name__ == "__main__":
-    # Usage:
-    #   python detect_shape_edges.py                 -> live webcam ('s' saves
-    #                                                   detections.json, 'q' quits)
-    #   python detect_shape_edges.py path\to\img.png -> still image (writes
-    #                                                   detections.json on load)
-    if len(sys.argv) > 1:
-        run_on_image(sys.argv[1])
-    else:
-        run_on_camera()

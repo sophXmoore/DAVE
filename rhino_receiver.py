@@ -37,6 +37,27 @@ _running = True
 # Maps shape id -> list of Rhino object GUIDs so we can delete & redraw.
 _registry = {}
 
+# Maps shape id -> last drawn centroid, used to skip unchanged shapes.
+_centroids = {}
+MOVE_TOLERANCE = 5.0  # units — skip redraw if centroid moves less than this
+
+
+def _centroid(pts_2d):
+    n = len(pts_2d)
+    return (sum(p[0] for p in pts_2d) / n, sum(p[1] for p in pts_2d) / n)
+
+
+def _has_moved(sid, pts_2d):
+    cx, cy = _centroid(pts_2d)
+    if sid not in _centroids:
+        _centroids[sid] = (cx, cy)
+        return True
+    px, py = _centroids[sid]
+    if ((cx - px) ** 2 + (cy - py) ** 2) ** 0.5 > MOVE_TOLERANCE:
+        _centroids[sid] = (cx, cy)
+        return True
+    return False
+
 
 # ---------------------------------------------------------------------------
 # Listener thread
@@ -121,18 +142,24 @@ def redraw(shapes):
     for sid in list(_registry.keys()):
         if sid not in incoming_ids:
             _delete_ids(_registry.pop(sid))
+            _centroids.pop(sid, None)
 
     for shape in shapes:
-        sid    = shape["id"]
-        pts_2d = shape["points"]
-        color  = _rgb_to_color(shape.get("color", [200, 200, 200]))
+        sid        = shape["id"]
+        pts_2d     = shape["points"]
+        color      = _rgb_to_color(shape.get("color", [200, 200, 200]))
+        shape_type = shape.get("shape", "unknown")
+
+        # Skip redraw if the shape hasn't moved beyond tolerance.
+        if not _has_moved(sid, pts_2d):
+            continue
 
         # Build 3D points on the XY plane (z = 0).
         pts3d = [Rhino.Geometry.Point3d(p[0], p[1], 0) for p in pts_2d]
 
-        # Close the polyline if it isn't already (filled shapes only —
-        # line strokes are intentionally left open).
-        if len(pts3d) > 2 and pts3d[0].DistanceTo(pts3d[-1]) > 1e-6:
+        # Close filled shapes; leave lines open.
+        is_line = (shape_type == "line")
+        if not is_line and len(pts3d) > 2 and pts3d[0].DistanceTo(pts3d[-1]) > 1e-6:
             pts3d.append(pts3d[0])
 
         # Delete previous version of this shape.

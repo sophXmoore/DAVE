@@ -38,27 +38,77 @@ _lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
-# Normalization
+# Shape tracker — assigns stable cross-frame IDs
 # ---------------------------------------------------------------------------
 
-def normalize(detections):
+class ShapeTracker:
     """
-    Collapse the two schemas from detect_shape_edges into one:
-      - filled shapes use 'coordinates' key
-      - line strokes use 'points' key
-    Both become 'points' here, and color strings become RGB lists.
+    Matches detected shapes frame-to-frame by color + shape type + centroid
+    proximity, issuing stable IDs so Rhino can track objects across frames.
     """
-    out = []
-    for d in detections:
-        pts = d.get("points") or d.get("coordinates")
-        if not pts:
-            continue
-        out.append({
-            "id":     str(d["id"]),
-            "color":  COLOR_RGB.get(d.get("color", "black"), [200, 200, 200]),
-            "points": pts,
-        })
-    return out
+    MATCH_DIST = 60   # px — max centroid movement to consider same shape
+    EMA_ALPHA  = 0.35 # smoothing factor: lower = smoother but slower to follow
+
+    def __init__(self):
+        self._tracked = {}  # stable_id -> {color, shape, centroid}
+        self._next_id = 1
+
+    @staticmethod
+    def _centroid(pts):
+        n = len(pts)
+        return (sum(p[0] for p in pts) / n, sum(p[1] for p in pts) / n)
+
+    def update(self, detections):
+        unmatched = set(self._tracked)
+        result = []
+
+        for d in detections:
+            pts = d.get("points") if d.get("points") is not None else d.get("coordinates")
+            if not pts:
+                continue
+            color      = d.get("color", "black")
+            shape_type = d.get("shape", "unknown")
+            cx, cy     = self._centroid(pts)
+
+            best_id, best_dist = None, self.MATCH_DIST
+            for tid in list(unmatched):
+                t = self._tracked[tid]
+                if t["color"] != color or t["shape"] != shape_type:
+                    continue
+                tx, ty = t["centroid"]
+                dist = ((cx - tx) ** 2 + (cy - ty) ** 2) ** 0.5
+                if dist < best_dist:
+                    best_dist, best_id = dist, tid
+
+            if best_id is not None:
+                unmatched.discard(best_id)
+                tx, ty = self._tracked[best_id]["centroid"]
+                self._tracked[best_id]["centroid"] = (
+                    tx + self.EMA_ALPHA * (cx - tx),
+                    ty + self.EMA_ALPHA * (cy - ty),
+                )
+                stable_id = best_id
+            else:
+                stable_id = self._next_id
+                self._next_id += 1
+                self._tracked[stable_id] = {
+                    "color": color, "shape": shape_type, "centroid": (cx, cy)
+                }
+
+            result.append({
+                "id":    str(stable_id),
+                "color": COLOR_RGB.get(color, [200, 200, 200]),
+                "shape": shape_type,
+                "points": pts,
+            })
+
+        for tid in unmatched:
+            del self._tracked[tid]
+
+        return result
+
+
+_tracker = ShapeTracker()
 
 
 # ---------------------------------------------------------------------------
@@ -124,10 +174,9 @@ def run():
         frame = cv2.resize(frame, (960, 540))
         output, mask, detections = detect_shapes(frame)
 
-        # Push normalized detections into shared state for the sender.
+        # Push tracked/normalized detections into shared state for the sender.
         with _lock:
-            _latest_shapes.clear()
-            _latest_shapes.extend(normalize(detections))
+            _latest_shapes[:] = _tracker.update(detections)
 
         cv2.imshow("Webcam", frame)
         cv2.imshow("Color Mask", mask)
