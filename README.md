@@ -2,56 +2,33 @@
 
 > A live, physical-to-digital design tool that bridges 3D printed massing models with AI-driven parametric generation in Rhino/Grasshopper.
 
-![DAVE demo](./assets/demo.gif)
-*Place physical blocks, watch the model update in real time.*
+![DAVE demo](./assets/demo.png)
+
+Built at AECTech.
 
 ---
 
-## What is DAVE?
+## How it works
 
-DAVE lets architects and urban designers **physically manipulate 3D printed massing blocks** on a table, while a camera tracks the layout and streams it into Rhino as live 2D outlines. From there, an AI agent (Claude) can generate parks, pedestrian paths, bridges, visibility analyses, and more — all in real time, just by talking to it.
+Place physical massing blocks on a blank background. A camera detects their outlines via OpenCV and streams them into Rhino as live 2D polygons. Claude, connected via MCP, can then interface with the geometry and be your personal design assistant!
 
-Built at AECTech
-
----
-
-## Demo
-
-![CV edge detection pipeline](./assets/edge_detection.gif)
-*OpenCV edge detection converting physical blocks to 2D outlines.*
-
-![Rhino live update](./assets/rhino_live.gif)
-*Outlines updating in Rhino as blocks are moved.*
-
-![Claude generating geometry](./assets/claude_agent.gif)
-*Asking DAVE to generate a park between two blocks.*
-
----
-
-## Architecture
-
-![System architecture diagram](./assets/architecture.png)
-
-| Layer | What it does |
-|---|---|
-| Physical | 3D printed massing blocks on a calibration mat |
-| Computer Vision | OpenCV edge detection → polygon extraction → socket stream |
-| Rhino / Grasshopper | Receives live outlines, runs parametric GH scripts |
-| AI Agent | Claude via MCP + Swiftlet, calls GH tools from natural language |
-
----
-
-## Getting started
+| Layer           | Component                                                       |
+| --------------- | --------------------------------------------------------------- |
+| Computer Vision | `detect_shape_edges.py` — detects colored blocks via webcam     |
+| TCP Stream      | `tcp_sender.py` — streams detections to Rhino over localhost    |
+| Rhino           | `rhino_receiver.py` — receives shapes, draws outlines live      |
+| Grasshopper     | `Components.gh` — parametric tools the AI agent can call        |
+| AI Agent        | Claude via MCP (Swiftlet), calls GH tools from natural language |
 
 ### Prerequisites
 
 - Python 3.11+
 - Rhino 8 with Grasshopper
-- [Swiftlet](https://github.com/your-swiftlet-link) MCP plugin for Rhino
-- Claude/LLM 
-- A webcam 
+- [Swiftlet](https://www.food4rhino.com/en/app/swiftlet) MCP plugin for Rhino
+- Claude desktop app
+- Webcam
 
-### Installation
+### Install
 
 ```bash
 git clone https://github.com/your-org/dave
@@ -59,29 +36,26 @@ cd dave
 pip install -r requirements.txt
 ```
 
-### Running the CV pipeline
+### Run
 
-### Connecting to Rhino
-
-### Starting the AI agent
-
-## CV calibration tips
-
-## Grasshopper tools
-
-DAVE exposes the following tools to the Claude agent via Swiftlet MCP:
-
-| Tool | Description |
-|---|---|
-| `generate_park` | Creates green space geometry between specified blocks |
-| `draw_pedestrian_path` | Calculates and draws walking routes across the site |
-| `generate_bridge` | Connects two massing blocks with a bridge element |
-
-## Repo structure
-
----
-
-## Team
+1. **Open Rhino** and open `Components.gh` in Grasshopper.
+2. **Attach the receiver** — run `rhino_receiver.py` inside Rhino via _Tools > PythonScript > Run_.
+3. **Configure Claude** — add the Swiftlet MCP server to your Claude config file if not already done:
+   ```json
+   {
+     "mcpServers": {
+       "swiftlet": {
+         "command": "path/to/swiftlet-mcp"
+       }
+     }
+   }
+   ```
+4. **Open Claude** desktop app.
+5. **Run the TCP sender** — in a terminal:
+   ```bash
+   python tcp_sender.py
+   ```
+   Point your webcam at the mat and move blocks around. Press `q` to quit, `s` to snapshot.
 
 ---
 
