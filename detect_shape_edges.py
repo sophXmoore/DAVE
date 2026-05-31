@@ -14,6 +14,10 @@ MIN_AREA = 1500
 # through when we're looking for marker strokes.
 MIN_LINE_AREA = 350
 
+# When False, black shapes/lines are detected visually but not forwarded to the
+# TCP sender.
+DETECT_BLACK = False
+
 # A contour is treated as a drawn line (not a filled shape) when its estimated
 # stroke thickness is below this many pixels. thickness ~= 2 * area / perimeter:
 # for a long thin stroke this works out to roughly the marker's width, while a
@@ -185,6 +189,8 @@ def detect_shapes(frame):
     next_id = 1
 
     for color_name, ranges in COLOR_RANGES.items():
+        if not DETECT_BLACK and color_name == "black":
+            continue
         mask = mask_for_color(hsv, ranges)
         combined_mask = cv2.bitwise_or(combined_mask, mask)
 
